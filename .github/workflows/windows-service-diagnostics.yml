@@ -70,8 +70,13 @@ jobs:
       - name: Configure Release with the tag dependency graph
         shell: pwsh
         run: |
-          cmake -S . -B build/service -G Ninja -DCMAKE_BUILD_TYPE=Release -DAMNEZIAVPN_VERSION=5.0.3.0 -DAMNEZIA_BUILD_TESTS=OFF -DAMNEZIA_SERVICE_DIAGNOSTICS=ON "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" 2>&1 | Tee-Object artifacts/configure.log
+          cmake -S . -B build/service -G Ninja -DCMAKE_BUILD_TYPE=Release "-DAMNEZIAVPN_VERSION=5.0.3.0" -DAMNEZIA_BUILD_TESTS=OFF -DAMNEZIA_SERVICE_DIAGNOSTICS=ON "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" 2>&1 | Tee-Object artifacts/configure.log
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item build/service/service/server/amneziavpn-service.rc artifacts/generated-version.rc
+          Copy-Item build/service/service/server/version.h artifacts/generated-version.h
+          $resource = Get-Content artifacts/generated-version.rc -Raw
+          $header = Get-Content artifacts/generated-version.h -Raw
+          if ($resource -notmatch 'FILEVERSION\s+5,0,3,0' -or $header -notmatch '#define APP_VERSION "5\.0\.3\.0"') { throw 'Service version must remain exactly 5.0.3.0' }
       - name: Build only the user-mode service
         shell: pwsh
         run: |
