@@ -26,6 +26,8 @@ jobs:
       - name: Fetch Windows submodules at pinned gitlinks
         shell: pwsh
         run: |
+          git fetch --depth 1 origin de93650a90739b87bb47a632872ea9d0adc9412f
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           git submodule update --init --depth 1 -- client/3rd/qtkeychain client/3rd/SortFilterProxyModel
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -81,9 +83,12 @@ jobs:
           Copy-Item build/service/service/server/AmneziaVPN-service.exe artifacts/
           Copy-Item build/service/service/server/AmneziaVPN-service.pdb artifacts/
           dumpbin /dependents artifacts/AmneziaVPN-service.exe | Set-Content artifacts/imports.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           dumpbin /headers artifacts/AmneziaVPN-service.exe | Set-Content artifacts/pe-headers.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           git rev-parse HEAD | Set-Content artifacts/commit.txt
           git diff de93650a90739b87bb47a632872ea9d0adc9412f HEAD | Set-Content artifacts/diagnostic.patch
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           git submodule status | Set-Content artifacts/submodules.txt
           cmake --version | Set-Content artifacts/toolchain.txt
           conan --version | Add-Content artifacts/toolchain.txt
