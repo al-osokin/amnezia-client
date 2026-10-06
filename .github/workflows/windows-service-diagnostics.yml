@@ -1,0 +1,104 @@
+name: Windows service diagnostics (unsigned, no installation)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-service-diagnostics-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'al-osokin/amnezia-client'
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      CONAN_HOME: ${{ runner.temp }}\amnezia-conan
+      QT_VERSION: '6.10.2'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Fetch Windows submodules at pinned gitlinks
+        shell: pwsh
+        run: |
+          git submodule update --init --depth 1 -- client/3rd/qtkeychain client/3rd/SortFilterProxyModel
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+      - uses: jurplel/install-qt-action@b7840a6733f49e2a39c4355260d2375063d39b61 # v3
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: 'qtremoteobjects qt5compat qtshadertools'
+          dir: ${{ runner.temp }}
+          setup-python: false
+          aqtversion: '==3.3.0'
+          py7zrversion: '==0.22.*'
+          cache: false
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: x64
+      - name: Install pinned Conan in the ephemeral runner
+        shell: pwsh
+        run: python -m pip install conan==2.28.0
+      - name: Check diagnostic helper without starting the service
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build, artifacts | Out-Null
+          cl /nologo /std:c++20 /EHsc /W4 /DAMNEZIA_SERVICE_DIAGNOSTICS /Iclient/platforms/windows/daemon .github/tests/windows-service-diagnostics.cpp /Febuild/diagnostics-test.exe /Fobuild/diagnostics-test.obj /link shell32.lib advapi32.lib
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $testOutput = & ./build/diagnostics-test.exe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $testOutput | Tee-Object artifacts/helper-test.txt
+          $testPid = ($testOutput | Select-String 'DIAG_TEST_PID=(\d+)').Matches[0].Groups[1].Value
+          $testLog = Get-ChildItem "$env:ProgramData/AmneziaVPN-service-diag-$testPid-*.log"
+          if (@($testLog).Count -ne 1) { throw 'Diagnostic sink did not create exactly one file' }
+          $records = Get-Content $testLog.FullName
+          if (@($records).Count -ne 6) { throw 'Expected three complete operation pairs' }
+          if (-not ($records -match 'phase=end op=test.invalid_handle .* a=0 b=6 c=0')) { throw 'Missing original Win32 error in the diagnostic record' }
+          $records | Set-Content artifacts/helper-test.log
+      - name: Configure Release with the tag dependency graph
+        shell: pwsh
+        run: |
+          cmake -S . -B build/service -G Ninja -DCMAKE_BUILD_TYPE=Release -DAMNEZIAVPN_VERSION=5.0.3.0 -DAMNEZIA_BUILD_TESTS=OFF -DAMNEZIA_SERVICE_DIAGNOSTICS=ON "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" 2>&1 | Tee-Object artifacts/configure.log
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build only the user-mode service
+        shell: pwsh
+        run: |
+          cmake --build build/service --target AmneziaVPN-service --parallel 2 2>&1 | Tee-Object artifacts/build.log
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Collect unsigned EXE, matching PDB, imports and source manifest
+        shell: pwsh
+        run: |
+          Copy-Item build/service/service/server/AmneziaVPN-service.exe artifacts/
+          Copy-Item build/service/service/server/AmneziaVPN-service.pdb artifacts/
+          dumpbin /dependents artifacts/AmneziaVPN-service.exe | Set-Content artifacts/imports.txt
+          dumpbin /headers artifacts/AmneziaVPN-service.exe | Set-Content artifacts/pe-headers.txt
+          git rev-parse HEAD | Set-Content artifacts/commit.txt
+          git diff de93650a90739b87bb47a632872ea9d0adc9412f HEAD | Set-Content artifacts/diagnostic.patch
+          git submodule status | Set-Content artifacts/submodules.txt
+          cmake --version | Set-Content artifacts/toolchain.txt
+          conan --version | Add-Content artifacts/toolchain.txt
+          python --version | Add-Content artifacts/toolchain.txt
+          cl 2>&1 | Add-Content artifacts/toolchain.txt
+          "QT_VERSION=$env:QT_VERSION" | Add-Content artifacts/toolchain.txt
+          Get-FileHash artifacts/AmneziaVPN-service.exe,artifacts/AmneziaVPN-service.pdb -Algorithm SHA256 | Format-List | Out-String | Set-Content artifacts/SHA256.txt
+          Copy-Item .github/diagnostics-readme.txt artifacts/README.txt
+          # cl without a source prints its version but exits nonzero.
+          $global:LASTEXITCODE = 0
+      - name: Upload diagnostic files only; never publish an installer/release
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: AmneziaVPN-service-5.0.3.0-diag-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 7

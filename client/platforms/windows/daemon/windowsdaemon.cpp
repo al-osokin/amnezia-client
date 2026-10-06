@@ -20,6 +20,7 @@
 #include "dnsutilswindows.h"
 #include "leakdetector.h"
 #include "logger.h"
+#include "windowsservicediagnostics.h"
 #include "platforms/windows/daemon/windowsfirewall.h"
 #include "platforms/windows/daemon/windowssplittunnel.h"
 #include "windowsfirewall.h"
@@ -31,6 +32,7 @@ Logger logger("WindowsDaemon");
 }
 
 WindowsDaemon::WindowsDaemon() : Daemon(nullptr) {
+  amnezia::diag::Scope trace("daemon.create");
   MZ_COUNT_CTOR(WindowsDaemon);
   m_firewallManager = WindowsFirewall::create(this);
   Q_ASSERT(m_firewallManager != nullptr);
@@ -46,6 +48,7 @@ WindowsDaemon::WindowsDaemon() : Daemon(nullptr) {
 }
 
 WindowsDaemon::~WindowsDaemon() {
+  amnezia::diag::Scope trace("daemon.destroy");
   MZ_COUNT_DTOR(WindowsDaemon);
   logger.debug() << "Daemon released";
 }
@@ -62,6 +65,7 @@ void WindowsDaemon::prepareActivation(const InterfaceConfig& config, int inetAda
 }
 
 void WindowsDaemon::activateSplitTunnel(const InterfaceConfig& config, int vpnAdapterIndex) {
+  amnezia::diag::Scope trace("daemon.activateSplitTunnel", config.m_vpnDisabledApps.size(), vpnAdapterIndex);
     if (m_splitTunnelManager == nullptr) {
         if (config.m_vpnDisabledApps.length() > 0) {
             logger.error() << "Split tunnel manager is not initialized";
@@ -91,6 +95,7 @@ void WindowsDaemon::activateSplitTunnel(const InterfaceConfig& config, int vpnAd
 }
 
 bool WindowsDaemon::run(Op op, const InterfaceConfig& config) {
+  amnezia::diag::Scope trace("daemon.run", static_cast<int>(op), config.m_vpnDisabledApps.size());
   if (!m_splitTunnelManager) {
     if (config.m_vpnDisabledApps.length() > 0) {
       // The Client has sent us a list of disabled apps, but we failed

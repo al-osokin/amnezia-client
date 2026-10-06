@@ -288,6 +288,13 @@ include_directories(
 
 
 add_executable(${PROJECT} ${SOURCES} ${HEADERS} ${RESOURCES})
+option(AMNEZIA_SERVICE_DIAGNOSTICS "Instrument Windows user-mode service calls" OFF)
+if(WIN32 AND MSVC AND AMNEZIA_SERVICE_DIAGNOSTICS)
+    target_compile_definitions(${PROJECT} PRIVATE AMNEZIA_SERVICE_DIAGNOSTICS)
+    target_compile_options(${PROJECT} PRIVATE /Zi)
+    target_link_options(${PROJECT} PRIVATE /DEBUG:FULL /OPT:REF /OPT:ICF)
+endif()
+
 target_link_libraries(${PROJECT} PRIVATE Qt6::Core Qt6::Widgets Qt6::Network Qt6::RemoteObjects Qt6::Core5Compat Qt6::DBus Qt6::Concurrent ${LIBS})
 target_compile_definitions(${PROJECT} PRIVATE "MZ_$<UPPER_CASE:${MZ_PLATFORM_NAME}>")
 

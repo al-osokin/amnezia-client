@@ -8,6 +8,7 @@
 
 #include "leakdetector.h"
 #include "logger.h"
+#include "windowsservicediagnostics.h"
 
 namespace {
 Logger logger("WindowsRouteMonitor");
@@ -60,15 +61,17 @@ static int prefixcmp(const void* a, const void* b, size_t bits) {
 
 WindowsRouteMonitor::WindowsRouteMonitor(quint64 luid, QObject* parent)
     : QObject(parent), m_luid(luid) {
+  amnezia::diag::Scope trace("routes.create");
   MZ_COUNT_CTOR(WindowsRouteMonitor);
   logger.debug() << "WindowsRouteMonitor created.";
 
-  NotifyRouteChange2(AF_INET, routeChangeCallback, this, FALSE, &m_routeHandle);
+  amnezia::diag::routeCall("NotifyRouteChange2", [&]() { return NotifyRouteChange2(AF_INET, routeChangeCallback, this, FALSE, &m_routeHandle); });
 }
 
 WindowsRouteMonitor::~WindowsRouteMonitor() {
+  amnezia::diag::Scope trace("routes.destroy");
   MZ_COUNT_DTOR(WindowsRouteMonitor);
-  CancelMibChangeNotify2(m_routeHandle);
+  amnezia::diag::routeCall("CancelMibChangeNotify2", [&]() { return CancelMibChangeNotify2(m_routeHandle); });
 
   flushRouteTable(m_exclusionRoutes);
   flushRouteTable(m_clonedRoutes);
@@ -76,8 +79,9 @@ WindowsRouteMonitor::~WindowsRouteMonitor() {
 }
 
 void WindowsRouteMonitor::updateInterfaceMetrics(int family) {
+  amnezia::diag::Scope trace("routes.updateInterfaceMetrics", family);
   PMIB_IPINTERFACE_TABLE table;
-  DWORD result = GetIpInterfaceTable(family, &table);
+  DWORD result = amnezia::diag::routeCall("GetIpInterfaceTable", [&]() { return GetIpInterfaceTable(family, &table); });
   if (result != NO_ERROR) {
     logger.warning() << "Failed to retrive interface table." << result;
     return;
@@ -117,6 +121,7 @@ void WindowsRouteMonitor::updateInterfaceMetrics(int family) {
 
 void WindowsRouteMonitor::updateExclusionRoute(MIB_IPFORWARD_ROW2* data,
                                                void* ptable) {
+  amnezia::diag::Scope trace("routes.updateExclusionRoute", data->DestinationPrefix.Prefix.si_family, data->DestinationPrefix.PrefixLength);
   PMIB_IPFORWARD_TABLE2 table = reinterpret_cast<PMIB_IPFORWARD_TABLE2>(ptable);
   SOCKADDR_INET nexthop = {};
   quint64 bestLuid = 0;
@@ -189,7 +194,7 @@ void WindowsRouteMonitor::updateExclusionRoute(MIB_IPFORWARD_ROW2* data,
 
   // Delete the previous routing table entry, if any.
   if (data->InterfaceLuid.Value != 0) {
-    DWORD result = DeleteIpForwardEntry2(data);
+    DWORD result = amnezia::diag::routeCall("DeleteIpForwardEntry2", [&]() { return DeleteIpForwardEntry2(data); });
     if ((result != NO_ERROR) && (result != ERROR_NOT_FOUND)) {
       logger.error() << "Failed to delete route:" << result;
     }
@@ -199,7 +204,7 @@ void WindowsRouteMonitor::updateExclusionRoute(MIB_IPFORWARD_ROW2* data,
   data->InterfaceLuid.Value = bestLuid;
   memcpy(&data->NextHop, &nexthop, sizeof(SOCKADDR_INET));
   if (data->InterfaceLuid.Value != 0) {
-    DWORD result = CreateIpForwardEntry2(data);
+    DWORD result = amnezia::diag::routeCall("CreateIpForwardEntry2", [&]() { return CreateIpForwardEntry2(data); });
     if (result != NO_ERROR) {
       logger.error() << "Failed to update route:" << result;
     }
@@ -252,12 +257,13 @@ bool WindowsRouteMonitor::isRouteExcluded(const IP_ADDRESS_PREFIX* dest) const {
 }
 
 void WindowsRouteMonitor::updateCapturedRoutes(int family) {
+  amnezia::diag::Scope trace("routes.updateCapturedRoutes.fetch", family, m_defaultRouteCapture);
   if (!m_defaultRouteCapture) {
     return;
   }
 
   PMIB_IPFORWARD_TABLE2 table;
-  DWORD error = GetIpForwardTable2(family, &table);
+  DWORD error = amnezia::diag::routeCall("GetIpForwardTable2", [&]() { return GetIpForwardTable2(family, &table); });
   if (error != NO_ERROR) {
     updateCapturedRoutes(family, table);
     FreeMibTable(table);
@@ -265,6 +271,7 @@ void WindowsRouteMonitor::updateCapturedRoutes(int family) {
 }
 
 void WindowsRouteMonitor::updateCapturedRoutes(int family, void* ptable) {
+  amnezia::diag::Scope trace("routes.updateCapturedRoutes.apply", family, m_defaultRouteCapture);
   PMIB_IPFORWARD_TABLE2 table = reinterpret_cast<PMIB_IPFORWARD_TABLE2>(ptable);
   if (!m_defaultRouteCapture) {
     return;
@@ -324,7 +331,7 @@ void WindowsRouteMonitor::updateCapturedRoutes(int family, void* ptable) {
     data->Age = 0;
 
     // Route this traffic into the VPN tunnel.
-    DWORD result = CreateIpForwardEntry2(data);
+    DWORD result = amnezia::diag::routeCall("CreateIpForwardEntry2", [&]() { return CreateIpForwardEntry2(data); });
     if (result != NO_ERROR) {
       logger.error() << "Failed to update route:" << result;
       delete data;
@@ -356,7 +363,7 @@ void WindowsRouteMonitor::updateCapturedRoutes(int family, void* ptable) {
     logger.debug() << "Removing route capture for" << i.key().toString();
 
     // Otherwise, this route is no longer in use.
-    DWORD result = DeleteIpForwardEntry2(data);
+    DWORD result = amnezia::diag::routeCall("DeleteIpForwardEntry2", [&]() { return DeleteIpForwardEntry2(data); });
     if ((result != NO_ERROR) && (result != ERROR_NOT_FOUND)) {
       logger.error() << "Failed to delete route:" << result;
     }
@@ -366,6 +373,7 @@ void WindowsRouteMonitor::updateCapturedRoutes(int family, void* ptable) {
 }
 
 bool WindowsRouteMonitor::addExclusionRoute(const IPAddress& prefix) {
+  amnezia::diag::Scope trace("routes.addExclusion", prefix.address().isNull(), static_cast<int>(prefix.address().protocol()), prefix.prefixLength());
   logger.debug() << "Adding exclusion route for" << prefix.toString();
 
   // Silently ignore non-routeable addresses.
@@ -417,7 +425,7 @@ bool WindowsRouteMonitor::addExclusionRoute(const IPAddress& prefix) {
     family = AF_INET;
   }
 
-  DWORD result = GetIpForwardTable2(family, &table);
+  DWORD result = amnezia::diag::routeCall("GetIpForwardTable2", [&]() { return GetIpForwardTable2(family, &table); });
   if (result != NO_ERROR) {
     logger.error() << "Failed to fetch routing table:" << result;
     delete data;
@@ -433,6 +441,7 @@ bool WindowsRouteMonitor::addExclusionRoute(const IPAddress& prefix) {
 }
 
 bool WindowsRouteMonitor::deleteExclusionRoute(const IPAddress& prefix) {
+  amnezia::diag::Scope trace("routes.deleteExclusion", prefix.address().isNull(), static_cast<int>(prefix.address().protocol()), prefix.prefixLength());
   logger.debug() << "Deleting exclusion route for"
                  << prefix.address().toString();
 
@@ -441,7 +450,7 @@ bool WindowsRouteMonitor::deleteExclusionRoute(const IPAddress& prefix) {
     return true;
   }
 
-  DWORD result = DeleteIpForwardEntry2(data);
+  DWORD result = amnezia::diag::routeCall("DeleteIpForwardEntry2", [&]() { return DeleteIpForwardEntry2(data); });
   if ((result != ERROR_NOT_FOUND) && (result != NO_ERROR)) {
     logger.error() << "Failed to delete route to"
                    << prefix.toString()
@@ -457,9 +466,10 @@ bool WindowsRouteMonitor::deleteExclusionRoute(const IPAddress& prefix) {
 
 void WindowsRouteMonitor::flushRouteTable(
     QHash<IPAddress, MIB_IPFORWARD_ROW2*>& table) {
+  amnezia::diag::Scope trace("routes.flush", table.size());
   for (auto i = table.begin(); i != table.end(); i++) {
     MIB_IPFORWARD_ROW2* data = i.value();
-    DWORD result = DeleteIpForwardEntry2(data);
+    DWORD result = amnezia::diag::routeCall("DeleteIpForwardEntry2", [&]() { return DeleteIpForwardEntry2(data); });
     if ((result != ERROR_NOT_FOUND) && (result != NO_ERROR)) {
       logger.error() << "Failed to delete route to"
                      << i.key().toString()
@@ -481,10 +491,11 @@ void WindowsRouteMonitor::setDetaultRouteCapture(bool enable) {
 }
 
 void WindowsRouteMonitor::routeChanged() {
+  amnezia::diag::Scope trace("routes.changed", m_exclusionRoutes.size(), m_clonedRoutes.size());
   logger.debug() << "Routes changed";
 
   PMIB_IPFORWARD_TABLE2 table;
-  DWORD result = GetIpForwardTable2(AF_UNSPEC, &table);
+  DWORD result = amnezia::diag::routeCall("GetIpForwardTable2", [&]() { return GetIpForwardTable2(AF_UNSPEC, &table); });
   if (result != NO_ERROR) {
     logger.error() << "Failed to fetch routing table:" << result;
     return;

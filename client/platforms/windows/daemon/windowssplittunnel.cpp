@@ -11,6 +11,7 @@
 #include "../windowscommons.h"
 #include "../windowsservicemanager.h"
 #include "logger.h"
+#include "windowsservicediagnostics.h"
 #include "platforms/windows/daemon/windowsfirewall.h"
 #include "platforms/windows/daemon/windowssplittunnel.h"
 #include "platforms/windows/windowsutils.h"
@@ -165,6 +166,7 @@ QString normalizeExecutablePath(const QString& path) {
 
 std::unique_ptr<WindowsSplitTunnel> WindowsSplitTunnel::create(
     WindowsFirewall* fw) {
+  amnezia::diag::Scope trace("split.create");
   if (fw == nullptr) {
     // Pre-Condition:
     // Make sure the Windows Firewall has created the sublayer
@@ -246,6 +248,7 @@ std::unique_ptr<WindowsSplitTunnel> WindowsSplitTunnel::create(
 }
 
 bool WindowsSplitTunnel::initDriver(HANDLE driverIO) {
+  amnezia::diag::Scope trace("split.initDriver");
   // We need to now check the state and init it, if required
   auto state = getState(driverIO);
   if (state == STATE_UNKNOWN) {
@@ -266,7 +269,7 @@ bool WindowsSplitTunnel::initDriver(HANDLE driverIO) {
   }
 
   DWORD bytesReturned;
-  auto ok = DeviceIoControl(driverIO, IOCTL_INITIALIZE, nullptr, 0, nullptr, 0,
+  auto ok = amnezia::diag::deviceIoControl("IOCTL_INITIALIZE", driverIO, IOCTL_INITIALIZE, nullptr, 0, nullptr, 0,
                             &bytesReturned, nullptr);
   if (!ok) {
     auto err = GetLastError();
@@ -286,11 +289,13 @@ WindowsSplitTunnel::WindowsSplitTunnel(HANDLE driverIO) : m_driver(driverIO) {
 }
 
 WindowsSplitTunnel::~WindowsSplitTunnel() {
+  amnezia::diag::Scope trace("split.destroy");
   CloseHandle(m_driver);
   uninstallDriver();
 }
 
 bool WindowsSplitTunnel::excludeApps(const QStringList& appPaths) {
+  amnezia::diag::Scope trace("split.excludeApps", appPaths.size());
   auto state = getState();
   if (state != STATE_READY && state != STATE_RUNNING) {
     logger.warning() << "Driver is not in the right State to set Rules"
@@ -306,7 +311,7 @@ bool WindowsSplitTunnel::excludeApps(const QStringList& appPaths) {
   }
 
   DWORD bytesReturned;
-  auto ok = DeviceIoControl(m_driver, IOCTL_SET_CONFIGURATION, &config[0],
+  auto ok = amnezia::diag::deviceIoControl("IOCTL_SET_CONFIGURATION", m_driver, IOCTL_SET_CONFIGURATION, &config[0],
                             (DWORD)config.size(), nullptr, 0, &bytesReturned,
                             nullptr);
   if (!ok) {
@@ -320,6 +325,7 @@ bool WindowsSplitTunnel::excludeApps(const QStringList& appPaths) {
 }
 
 bool WindowsSplitTunnel::start(int inetAdapterIndex, int vpnAdapterIndex) {
+  amnezia::diag::Scope trace("split.start", inetAdapterIndex, vpnAdapterIndex);
   // To Start we need to send 2 things:
   // Network info (what is vpn what is network)
   logger.debug() << "Starting SplitTunnel";
@@ -328,7 +334,7 @@ bool WindowsSplitTunnel::start(int inetAdapterIndex, int vpnAdapterIndex) {
   if (getState() == STATE_STARTED) {
     logger.debug() << "Driver needs Init Call";
     DWORD bytesReturned;
-    auto ok = DeviceIoControl(m_driver, IOCTL_INITIALIZE, nullptr, 0, nullptr,
+    auto ok = amnezia::diag::deviceIoControl("IOCTL_INITIALIZE", m_driver, IOCTL_INITIALIZE, nullptr, 0, nullptr,
                               0, &bytesReturned, nullptr);
     if (!ok) {
       logger.error() << "Driver init failed. Error:" << GetLastError();
@@ -344,7 +350,7 @@ bool WindowsSplitTunnel::start(int inetAdapterIndex, int vpnAdapterIndex) {
       logger.error() << "Process configuration blob is empty";
       return false;
     }
-    auto ok = DeviceIoControl(m_driver, IOCTL_REGISTER_PROCESSES, &config[0],
+    auto ok = amnezia::diag::deviceIoControl("IOCTL_REGISTER_PROCESSES", m_driver, IOCTL_REGISTER_PROCESSES, &config[0],
                               (DWORD)config.size(), nullptr, 0, &bytesReturned,
                               nullptr);
     if (!ok) {
@@ -367,7 +373,7 @@ bool WindowsSplitTunnel::start(int inetAdapterIndex, int vpnAdapterIndex) {
                    << inetAdapterIndex << "VPN adapter:" << vpnAdapterIndex;
     return false;
   }
-  auto ok = DeviceIoControl(m_driver, IOCTL_REGISTER_IP_ADDRESSES, &config[0],
+  auto ok = amnezia::diag::deviceIoControl("IOCTL_REGISTER_IP_ADDRESSES", m_driver, IOCTL_REGISTER_IP_ADDRESSES, &config[0],
                             (DWORD)config.size(), nullptr, 0, &bytesReturned,
                             nullptr);
   if (!ok) {
@@ -379,8 +385,9 @@ bool WindowsSplitTunnel::start(int inetAdapterIndex, int vpnAdapterIndex) {
 }
 
 void WindowsSplitTunnel::stop() {
+  amnezia::diag::Scope trace("split.stop");
   DWORD bytesReturned;
-  auto ok = DeviceIoControl(m_driver, IOCTL_CLEAR_CONFIGURATION, nullptr, 0,
+  auto ok = amnezia::diag::deviceIoControl("IOCTL_CLEAR_CONFIGURATION", m_driver, IOCTL_CLEAR_CONFIGURATION, nullptr, 0,
                             nullptr, 0, &bytesReturned, nullptr);
   if (!ok) {
     logger.error() << "Stopping Split tunnel not successfull";
@@ -390,8 +397,9 @@ void WindowsSplitTunnel::stop() {
 }
 
 bool WindowsSplitTunnel::resetDriver(HANDLE driverIO) {
+  amnezia::diag::Scope trace("split.resetDriver");
   DWORD bytesReturned;
-  auto ok = DeviceIoControl(driverIO, IOCTL_ST_RESET, nullptr, 0, nullptr, 0,
+  auto ok = amnezia::diag::deviceIoControl("IOCTL_ST_RESET", driverIO, IOCTL_ST_RESET, nullptr, 0, nullptr, 0,
                             &bytesReturned, nullptr);
   if (!ok) {
     logger.error() << "Reset Split tunnel not successfull";
@@ -409,7 +417,7 @@ WindowsSplitTunnel::DRIVER_STATE WindowsSplitTunnel::getState(HANDLE driverIO) {
   }
   DWORD bytesReturned;
   SIZE_T outBuffer;
-  bool ok = DeviceIoControl(driverIO, IOCTL_GET_STATE, nullptr, 0, &outBuffer,
+  bool ok = amnezia::diag::deviceIoControl("IOCTL_GET_STATE", driverIO, IOCTL_GET_STATE, nullptr, 0, &outBuffer,
                             sizeof(outBuffer), &bytesReturned, nullptr);
   if (!ok) {
     WindowsUtils::windowsLog("getState response failure");
@@ -419,6 +427,9 @@ WindowsSplitTunnel::DRIVER_STATE WindowsSplitTunnel::getState(HANDLE driverIO) {
     WindowsUtils::windowsLog("getState response is empty");
     return STATE_UNKNOWN;
   }
+  if (bytesReturned == sizeof(outBuffer)) {
+    amnezia::diag::record("value", "split.state", 0, 0, outBuffer, bytesReturned, 0);
+  }
   return static_cast<WindowsSplitTunnel::DRIVER_STATE>(outBuffer);
 }
 WindowsSplitTunnel::DRIVER_STATE WindowsSplitTunnel::getState() {
@@ -427,6 +438,7 @@ WindowsSplitTunnel::DRIVER_STATE WindowsSplitTunnel::getState() {
 
 std::vector<uint8_t> WindowsSplitTunnel::generateAppConfiguration(
     const QStringList& appPaths) {
+  amnezia::diag::Scope trace("split.generateAppConfiguration", appPaths.size());
   // Step 1: Calculate how much size the buffer will need
   size_t cummulated_string_size = 0;
   QStringList dosPaths;
@@ -481,6 +493,7 @@ std::vector<uint8_t> WindowsSplitTunnel::generateAppConfiguration(
 
 std::vector<std::byte> WindowsSplitTunnel::generateIPConfiguration(
     int inetAdapterIndex, int vpnAdapterIndex) {
+  amnezia::diag::Scope trace("split.generateIPConfiguration", inetAdapterIndex, vpnAdapterIndex);
   std::vector<std::byte> out(sizeof(IP_ADDRESSES_CONFIG));
 
   auto config = reinterpret_cast<IP_ADDRESSES_CONFIG*>(&out[0]);
@@ -533,6 +546,7 @@ bool WindowsSplitTunnel::getAddress(int adapterIndex, IN_ADDR* out_ipv4,
 }
 
 std::vector<uint8_t> WindowsSplitTunnel::generateProcessBlob() {
+  amnezia::diag::Scope trace("split.generateProcessBlob");
   // Get a Snapshot of all processes that are running:
   HANDLE snapshot_handle = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
   if (snapshot_handle == INVALID_HANDLE_VALUE) {
