@@ -16,7 +16,7 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 90
     env:
-      CONAN_HOME: ${{ runner.temp }}\amnezia-conan
+      CONAN_HOME: ${{ github.workspace }}\.conan-diag
       QT_VERSION: '6.10.2'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
