@@ -4,7 +4,14 @@ This package is NOT an installer and has not been installed on the user's PC.
 
 The service's existing synchronous DeviceIoControl calls and route API calls are
 wrapped with BEGIN/END timing and numeric results. No additional driver queries,
-retries, cancellation, reset policy or route logic changes are added.
+retries, cancellation or reset policy are added. Exclusion routes are validated
+before the Windows route API is called, and failed route updates are not retained
+in the service state.
+The diagnostic build also maintains a fixed-size per-process status file in
+ProgramData, overwritten every five seconds by a watchdog thread. It records the
+last started and completed operation and does not append heartbeat records to the
+main log. The main diagnostic log is capped at 16 MiB and flushes immediately on
+errors and slow operations.
 Release /MD, NDEBUG and version 5.0.3.0 remain; matching PDB is included.
 Qt SDK is 6.10.2 (matching the observed installed runtime); tag CI used 6.10.1.
 MSVC x64 from windows-2022 and the original Conan graph are used.

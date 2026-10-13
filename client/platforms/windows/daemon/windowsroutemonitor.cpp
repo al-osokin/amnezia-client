@@ -39,7 +39,6 @@ static void routeChangeCallback(PVOID context, PMIB_IPFORWARD_ROW2 row,
   // Invoke the route changed signal to do the real work in Qt.
   QMetaObject::invokeMethod(monitor, "routeChanged", Qt::QueuedConnection);
 }
-
 // Perform prefix matching comparison on IP addresses in host order.
 static int prefixcmp(const void* a, const void* b, size_t bits) {
   size_t bytes = bits / 8;
@@ -66,13 +65,6 @@ WindowsRouteMonitor::WindowsRouteMonitor(quint64 luid, QObject* parent)
   logger.debug() << "WindowsRouteMonitor created.";
 
   amnezia::diag::routeCall("NotifyRouteChange2", [&]() { return NotifyRouteChange2(AF_INET, routeChangeCallback, this, FALSE, &m_routeHandle); });
-
-#ifdef AMNEZIA_SERVICE_DIAGNOSTICS
-  m_diagnosticHeartbeatTimer.setInterval(60 * 1000);
-  connect(&m_diagnosticHeartbeatTimer, &QTimer::timeout, this,
-          &WindowsRouteMonitor::diagnosticHeartbeat);
-  m_diagnosticHeartbeatTimer.start();
-#endif
 }
 
 WindowsRouteMonitor::~WindowsRouteMonitor() {
@@ -529,8 +521,7 @@ void WindowsRouteMonitor::setDetaultRouteCapture(bool enable) {
 }
 
 void WindowsRouteMonitor::routeChanged() {
-  ++m_routeChangeCount;
-  amnezia::diag::Scope trace("routes.changed", m_exclusionRoutes.size(), m_clonedRoutes.size(), m_routeChangeCount);
+  amnezia::diag::Scope trace("routes.changed", m_exclusionRoutes.size(), m_clonedRoutes.size());
   logger.debug() << "Routes changed";
 
   PMIB_IPFORWARD_TABLE2 table;
@@ -549,10 +540,4 @@ void WindowsRouteMonitor::routeChanged() {
   }
 
   FreeMibTable(table);
-}
-
-void WindowsRouteMonitor::diagnosticHeartbeat() {
-  amnezia::diag::record("heartbeat", "routes.heartbeat", 0, 0,
-                        m_routeChangeCount, m_exclusionRoutes.size(),
-                        m_clonedRoutes.size());
 }

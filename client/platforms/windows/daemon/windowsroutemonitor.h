@@ -14,7 +14,6 @@
 #include <QHash>
 #include <QMap>
 #include <QObject>
-#include <QTimer>
 
 #include "ipaddress.h"
 
@@ -47,7 +46,6 @@ class WindowsRouteMonitor final : public QObject {
   void updateInterfaceMetrics(int family);
   void updateCapturedRoutes(int family);
   void updateCapturedRoutes(int family, void* table);
-  void diagnosticHeartbeat();
 
   QHash<IPAddress, MIB_IPFORWARD_ROW2*> m_exclusionRoutes;
   QMap<quint64, ULONG> m_interfaceMetricsIpv4;
@@ -56,9 +54,6 @@ class WindowsRouteMonitor final : public QObject {
   // Default route cloning
   bool m_defaultRouteCapture = false;
   QHash<IPAddress, MIB_IPFORWARD_ROW2*> m_clonedRoutes;
-
-  QTimer m_diagnosticHeartbeatTimer;
-  quint64 m_routeChangeCount = 0;
 
   const quint64 m_luid = 0;
   HANDLE m_routeHandle = INVALID_HANDLE_VALUE;
