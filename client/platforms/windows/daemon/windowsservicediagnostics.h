@@ -8,6 +8,7 @@
 #include <cstring>
 #include <cwchar>
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <thread>
 
@@ -26,12 +27,28 @@ constexpr DWORD kHeartbeatIntervalMs = 5000;
 constexpr uint64_t kStallReportIntervalMs = 15000;
 
 struct State {
+  struct ActiveOperation {
+    uint64_t tick = 0;
+    const char* operation = nullptr;
+    DWORD threadId = 0;
+  };
+
+  struct ActiveSnapshot {
+    uint64_t count = 0;
+    uint64_t id = 0;
+    uint64_t tick = 0;
+    const char* operation = nullptr;
+    DWORD threadId = 0;
+  };
+
   SRWLOCK lock = SRWLOCK_INIT;
   HANDLE log = INVALID_HANDLE_VALUE;
   HANDLE status = INVALID_HANDLE_VALUE;
   uint64_t logSize = 0;
   std::once_flag startOnce;
   std::thread watchdog;
+  std::mutex activeLock;
+  std::map<uint64_t, ActiveOperation> active;
   std::atomic<bool> stopping{false};
   std::atomic<uint64_t> sequence{0};
   std::atomic<uint64_t> lastBeginId{0};
@@ -41,6 +58,7 @@ struct State {
   std::atomic<uint64_t> lastEndTick{0};
   std::atomic<const char*> lastEndOperation{nullptr};
   std::atomic<uint64_t> lastError{0};
+  std::atomic<uint64_t> lastStallReportId{0};
   std::atomic<uint64_t> lastStallReportTick{0};
 
   ~State() {
@@ -157,17 +175,37 @@ inline void writeStatus(State& s) {
       s.lastBeginOperation.load(std::memory_order_acquire);
   const char* endOperation = s.lastEndOperation.load(std::memory_order_acquire);
   const uint64_t age = beginTick != 0 && now >= beginTick ? now - beginTick : 0;
+  State::ActiveSnapshot active;
+  {
+    std::lock_guard<std::mutex> guard(s.activeLock);
+    active.count = s.active.size();
+    for (const auto& entry : s.active) {
+      if (active.tick == 0 || entry.second.tick < active.tick) {
+        active.id = entry.first;
+        active.tick = entry.second.tick;
+        active.operation = entry.second.operation;
+        active.threadId = entry.second.threadId;
+      }
+    }
+  }
+  const uint64_t activeAge =
+      active.tick != 0 && now >= active.tick ? now - active.tick : 0;
 
   char line[1024] = {};
   const int count = sprintf_s(
       line,
-      "diag_status=v2 pid=%lu tick_ms=%llu heartbeat_ms=%lu "
+      "diag_status=v3 pid=%lu tick_ms=%llu heartbeat_ms=%lu "
       "last_begin_id=%llu last_begin_tick=%llu last_begin_op=%s "
       "last_end_id=%llu last_end_tick=%llu last_end_op=%s "
-      "last_begin_age_ms=%llu last_error=%llu\r\n",
+      "last_begin_age_ms=%llu active_count=%llu "
+      "oldest_active_id=%llu oldest_active_tick=%llu "
+      "oldest_active_op=%s oldest_active_tid=%lu oldest_active_age_ms=%llu "
+      "last_error=%llu\r\n",
       GetCurrentProcessId(), now, kHeartbeatIntervalMs, beginId, beginTick,
       beginOperation ? beginOperation : "none", endId, endTick,
-      endOperation ? endOperation : "none", age,
+      endOperation ? endOperation : "none", age, active.count, active.id,
+      active.tick, active.operation ? active.operation : "none", active.threadId,
+      activeAge,
       s.lastError.load(std::memory_order_acquire));
   if (count <= 0) {
     return;
@@ -185,15 +223,15 @@ inline void writeStatus(State& s) {
 }
 
 inline void writeStallRecord(State& s, uint64_t now, uint64_t beginId,
-                             const char* operation, uint64_t age,
-                             uint64_t endId) {
+                             const char* operation, DWORD threadId,
+                             uint64_t age) {
   char line[512] = {};
   const int count = sprintf_s(
       line,
-      "diag=v2 pid=%lu tid=%lu tick_ms=%llu phase=watchdog op=%s "
-      "id=%llu elapsed_ms=%llu a=%llu b=%llu c=%llu\r\n",
+      "diag=v3 pid=%lu tid=%lu tick_ms=%llu phase=watchdog op=%s "
+      "id=%llu elapsed_ms=%llu active_tid=%lu\r\n",
       GetCurrentProcessId(), GetCurrentThreadId(), now,
-      operation ? operation : "unknown", beginId, age, beginId, endId, 0ULL);
+      operation ? operation : "unknown", beginId, age, threadId);
   writeLine(s, line, count, true);
 }
 
@@ -208,24 +246,38 @@ inline void watchdogLoop(State* statePointer) {
 
     writeStatus(s);
     const uint64_t now = GetTickCount64();
-    const uint64_t beginId = s.lastBeginId.load(std::memory_order_acquire);
-    const uint64_t beginTick = s.lastBeginTick.load(std::memory_order_acquire);
-    const uint64_t endId = s.lastEndId.load(std::memory_order_acquire);
-    if (beginId == 0 || beginId == endId || beginTick == 0 || now < beginTick) {
+    const State::ActiveSnapshot active = [&s]() {
+      State::ActiveSnapshot snapshot;
+      std::lock_guard<std::mutex> guard(s.activeLock);
+      snapshot.count = s.active.size();
+      for (const auto& entry : s.active) {
+        if (snapshot.tick == 0 || entry.second.tick < snapshot.tick) {
+          snapshot.id = entry.first;
+          snapshot.tick = entry.second.tick;
+          snapshot.operation = entry.second.operation;
+          snapshot.threadId = entry.second.threadId;
+        }
+      }
+      return snapshot;
+    }();
+    if (active.id == 0 || active.tick == 0 || now < active.tick) {
+      s.lastStallReportId.store(0, std::memory_order_release);
       continue;
     }
 
-    const uint64_t age = now - beginTick;
+    const uint64_t age = now - active.tick;
+    const uint64_t lastReportId =
+        s.lastStallReportId.load(std::memory_order_acquire);
     const uint64_t lastReport =
         s.lastStallReportTick.load(std::memory_order_acquire);
     if (age < kStallReportIntervalMs ||
-        (lastReport != 0 && now - lastReport < kStallReportIntervalMs)) {
+        (lastReportId == active.id && lastReport != 0 &&
+         now - lastReport < kStallReportIntervalMs)) {
       continue;
     }
+    s.lastStallReportId.store(active.id, std::memory_order_release);
     s.lastStallReportTick.store(now, std::memory_order_release);
-    writeStallRecord(s, now, beginId,
-                     s.lastBeginOperation.load(std::memory_order_acquire), age,
-                     endId);
+    writeStallRecord(s, now, active.id, active.operation, active.threadId, age);
   }
 }
 
@@ -246,6 +298,10 @@ inline uint64_t nextId() {
 
 inline void markBegin(uint64_t id, const char* operation, uint64_t tick) {
   State& s = state();
+  {
+    std::lock_guard<std::mutex> guard(s.activeLock);
+    s.active[id] = {tick, operation, GetCurrentThreadId()};
+  }
   s.lastBeginOperation.store(operation, std::memory_order_release);
   s.lastBeginTick.store(tick, std::memory_order_release);
   s.lastBeginId.store(id, std::memory_order_release);
@@ -253,6 +309,10 @@ inline void markBegin(uint64_t id, const char* operation, uint64_t tick) {
 
 inline void markEnd(uint64_t id, const char* operation, uint64_t tick) {
   State& s = state();
+  {
+    std::lock_guard<std::mutex> guard(s.activeLock);
+    s.active.erase(id);
+  }
   s.lastEndOperation.store(operation, std::memory_order_release);
   s.lastEndTick.store(tick, std::memory_order_release);
   s.lastEndId.store(id, std::memory_order_release);

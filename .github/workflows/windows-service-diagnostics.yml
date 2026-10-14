@@ -65,7 +65,7 @@ jobs:
           if (@($testLog).Count -ne 1) { throw 'Diagnostic sink did not create exactly one file' }
           $testStatus = Get-Item "$env:ProgramData/AmneziaVPN-service-diag-status-$testPid.txt"
           if (-not $testStatus) { throw 'Diagnostic sink did not create the fixed-size status file' }
-          if ((Get-Content $testStatus.FullName -Raw) -notmatch 'diag_status=v2') { throw 'Status file has no heartbeat record' }
+          if ((Get-Content $testStatus.FullName -Raw) -notmatch 'diag_status=v3') { throw 'Status file has no heartbeat record' }
           $records = Get-Content $testLog.FullName
           if (@($records).Count -ne 6) { throw 'Expected three complete operation pairs' }
           if (-not ($records -match 'phase=end op=test.invalid_handle .* a=0 b=6 c=0')) { throw 'Missing original Win32 error in the diagnostic record' }
